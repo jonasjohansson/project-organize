@@ -11,6 +11,7 @@ Usage:
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 TEMPLATE_DIR = Path(
@@ -226,19 +227,17 @@ def dim(t):    return color(t, "2")
 def bold(t):   return color(t, "1")
 
 
-def parse_project_prefix(cwd):
-    """Extract a project prefix from the folder name.
+def parse_project_info(cwd):
+    """Extract project number, name words, and clean prefix from folder name.
 
     Expects formats like '186 SANKT PETRI' or 'NNN PROJECT NAME YEAR'.
-    Returns e.g. '186_Sankt_Petri'.
+    Returns (number, name_words, prefix) e.g. ('209', ['MOOD', 'MÄSTER', ...], '209_Mood_Mäster_...')
     """
-    folder_name = cwd.name
-
+    folder_name = unicodedata.normalize("NFC", cwd.name)
     parts = folder_name.split()
     if not parts:
-        return None
+        return None, [], None
 
-    # Check if first part is a project number
     number = None
     name_parts = parts
     if re.match(r"^\d+$", parts[0]):
@@ -246,14 +245,65 @@ def parse_project_prefix(cwd):
         name_parts = parts[1:]
 
     if not name_parts:
-        return number
+        return number, [], number
 
-    # Title case the name parts, join with underscore
-    name = "_".join(p.capitalize() for p in name_parts)
-
+    prefix = "_".join(p.capitalize() for p in name_parts)
     if number:
-        return f"{number}_{name}"
-    return name
+        prefix = f"{number}_{prefix}"
+
+    return number, [w.lower() for w in name_parts], prefix
+
+
+def strip_existing_prefix(stem, project_number, project_words):
+    """Strip any existing project prefix variant from a filename stem.
+
+    Handles formats like:
+        209_MOOD_Ma_ster_Samuelsgatan_06_JJ  → 06_JJ
+        Mood_Flow_Lines                       → Flow_Lines
+        flow_lines                            → flow_lines (no project words)
+    """
+    words = stem.split("_")
+    idx = 0
+
+    # Strip leading project number
+    if project_number and idx < len(words) and words[idx] == project_number:
+        idx += 1
+
+    # Strip words that match project name words (case-insensitive, allow ä↔a, ö↔o, å↔a)
+    def normalize_swe(s):
+        s = unicodedata.normalize("NFC", s)
+        return (s.lower()
+                .replace("ä", "a").replace("å", "a").replace("ö", "o")
+                .replace("é", "e").replace("ü", "u"))
+
+    normalized_project = [normalize_swe(w) for w in project_words]
+
+    while idx < len(words):
+        w = normalize_swe(words[idx])
+        # Check if this word (or joined with next words) matches a project word
+        matched = False
+        for pw in normalized_project:
+            # Try matching single word
+            if w == pw:
+                matched = True
+                break
+            # Try matching joined words (e.g. "Ma" + "ster" → "Master" → matches "Mäster")
+            joined = w
+            for lookahead in range(1, min(4, len(words) - idx)):
+                joined += normalize_swe(words[idx + lookahead])
+                if joined == pw:
+                    idx += lookahead  # skip the extra words
+                    matched = True
+                    break
+            if matched:
+                break
+        if matched:
+            idx += 1
+        else:
+            break
+
+    suffix = "_".join(words[idx:])
+    return suffix
 
 
 def is_generic_name(stem):
@@ -264,10 +314,12 @@ def is_generic_name(stem):
     return False
 
 
-def clean_name(name, project_prefix=None):
+def clean_name(name, project_prefix=None, project_number=None, project_words=None):
     """Apply naming conventions to filenames."""
+    # Normalize Unicode (macOS uses NFD, we want NFC for consistent ä/ö/å)
+    name = unicodedata.normalize("NFC", name)
     stem = Path(name).stem
-    ext = Path(name).suffix.lower()  # normalize extension to lowercase
+    ext = Path(name).suffix.lower()
 
     # Spaces → underscores
     new_stem = stem.replace(" ", "_")
@@ -284,20 +336,30 @@ def clean_name(name, project_prefix=None):
     # Strip leading/trailing underscores
     new_stem = new_stem.strip("_")
 
-    # Replace generic names with project prefix
-    if project_prefix and is_generic_name(new_stem):
-        # Preserve embedded date (e.g. Screen_Shot_2024-01-15 → keep date)
+    if not project_prefix:
+        return new_stem + ext
+
+    # Handle generic names (Untitled, IMG_XXXX, etc.)
+    if is_generic_name(new_stem):
         date_match = re.search(r"(\d{4}[-_]\d{2}[-_]\d{2})", new_stem)
         if date_match:
             date_str = date_match.group(1).replace("_", "-")
             new_stem = f"{project_prefix}_{date_str}"
         else:
-            # Preserve any trailing number (e.g. IMG_4532 → keep 4532 as sequence)
             trailing = re.search(r"(\d+)$", new_stem)
             if trailing:
                 new_stem = f"{project_prefix}_{trailing.group(1)}"
             else:
                 new_stem = project_prefix
+        return new_stem + ext
+
+    # For all other files: strip any existing prefix variant, prepend clean prefix
+    suffix = strip_existing_prefix(new_stem, project_number, project_words or [])
+
+    if suffix:
+        new_stem = f"{project_prefix}_{suffix}"
+    else:
+        new_stem = project_prefix
 
     return new_stem + ext
 
@@ -410,7 +472,7 @@ def cmd_sort(deep=False):
         return
 
     # Parse project prefix from folder name
-    project_prefix = parse_project_prefix(cwd)
+    project_number, project_words, project_prefix = parse_project_info(cwd)
     if project_prefix:
         print(f"{bold('Project prefix:')} {project_prefix}")
         print()
@@ -423,7 +485,8 @@ def cmd_sort(deep=False):
 
     for f in sorted(files):
         rel_source = f.relative_to(cwd)
-        new_name = clean_name(f.name, project_prefix=project_prefix)
+        new_name = clean_name(f.name, project_prefix=project_prefix,
+                              project_number=project_number, project_words=project_words)
 
         dest_folder, reason = classify_file(f)
         dest_path = Path(dest_folder) / new_name
@@ -557,7 +620,7 @@ def cmd_rename():
     import shutil
 
     cwd = Path.cwd()
-    project_prefix = parse_project_prefix(cwd)
+    project_number, project_words, project_prefix = parse_project_info(cwd)
 
     if project_prefix:
         print(f"{bold('Project prefix:')} {project_prefix}")
@@ -571,7 +634,8 @@ def cmd_rename():
             if fname in SKIP_FILES or fname.startswith("."):
                 continue
             filepath = Path(root) / fname
-            new_name = clean_name(fname, project_prefix=project_prefix)
+            new_name = clean_name(fname, project_prefix=project_prefix,
+                                  project_number=project_number, project_words=project_words)
             if new_name != fname:
                 renames.append((filepath, new_name))
 
