@@ -418,26 +418,28 @@ def apply_plan(cwd, moves, do_moves=True):
     # Clean up empty directories left behind
     if do_moves:
         removed_dirs = []
-        # Walk bottom-up so children are removed before parents
-        for root, dirs, files in os.walk(cwd, topdown=False):
-            dirpath = Path(root)
-            # Skip the project root itself
-            if dirpath == cwd:
-                continue
-            # Skip template folders — those should stay even if empty
-            rel = dirpath.relative_to(cwd)
-            top_folder = rel.parts[0] if rel.parts else ""
-            if top_folder in TEMPLATE_ROOTS:
-                continue
-            # Remove if empty (only .DS_Store or truly empty)
-            remaining = [f for f in dirpath.iterdir() if f.name != ".DS_Store"]
-            if not remaining:
-                # Remove .DS_Store if it's the only thing left
-                ds = dirpath / ".DS_Store"
-                if ds.exists():
-                    ds.unlink()
-                dirpath.rmdir()
-                removed_dirs.append(str(rel))
+        # Repeat until no more empty dirs found (handles nested empties)
+        changed = True
+        while changed:
+            changed = False
+            for root, dirs, files in os.walk(cwd, topdown=False):
+                dirpath = Path(root)
+                if dirpath == cwd:
+                    continue
+                # Skip template folders — those should stay even if empty
+                rel = dirpath.relative_to(cwd)
+                top_folder = rel.parts[0] if rel.parts else ""
+                if top_folder in TEMPLATE_ROOTS:
+                    continue
+                # Check if truly empty (ignore .DS_Store)
+                contents = [f for f in dirpath.iterdir() if f.name != ".DS_Store"]
+                if not contents:
+                    ds = dirpath / ".DS_Store"
+                    if ds.exists():
+                        ds.unlink()
+                    dirpath.rmdir()
+                    removed_dirs.append(str(rel))
+                    changed = True
 
         if removed_dirs:
             print()
@@ -449,6 +451,38 @@ def apply_plan(cwd, moves, do_moves=True):
     print(green(f"Done. Processed {done} files."))
 
 
+def cmd_clean():
+    """Remove empty non-template directories."""
+    cwd = Path.cwd()
+    removed = []
+    changed = True
+    while changed:
+        changed = False
+        for root, dirs, files in os.walk(cwd, topdown=False):
+            dirpath = Path(root)
+            if dirpath == cwd:
+                continue
+            rel = dirpath.relative_to(cwd)
+            top_folder = rel.parts[0] if rel.parts else ""
+            if top_folder in TEMPLATE_ROOTS:
+                continue
+            contents = [f for f in dirpath.iterdir() if f.name != ".DS_Store"]
+            if not contents:
+                ds = dirpath / ".DS_Store"
+                if ds.exists():
+                    ds.unlink()
+                dirpath.rmdir()
+                removed.append(str(rel))
+                changed = True
+
+    if removed:
+        print(bold(f"Removed {len(removed)} empty folders:"))
+        for d in sorted(removed):
+            print(f"  {dim('-')} {d}/")
+    else:
+        print(dim("No empty non-template folders found."))
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def usage():
@@ -457,6 +491,7 @@ def usage():
     print(f"  {bold('init')}          Create template folder structure here")
     print(f"  {bold('sort')}          Analyze loose files, show plan, confirm to move")
     print(f"  {bold('sort --deep')}   Also scan inside non-template subdirectories")
+    print(f"  {bold('clean')}         Remove empty non-template folders")
     print()
     print("Template location:")
     print(f"  {dim(str(TEMPLATE_DIR))}")
@@ -474,6 +509,8 @@ def main():
     elif cmd == "sort":
         deep = "--deep" in sys.argv
         cmd_sort(deep=deep)
+    elif cmd == "clean":
+        cmd_clean()
     elif cmd in ("-h", "--help", "help"):
         usage()
     else:
