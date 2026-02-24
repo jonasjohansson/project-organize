@@ -59,6 +59,7 @@ NAME_RULES = [
 EXT_MAP = {
     # 3D models
     ".blend": "02_Design/3D/Models",
+    ".blend1": "02_Design/3D/Models",
     ".3dm":   "02_Design/3D/Models",
     ".f3d":   "02_Design/3D/Models",
     ".fbx":   "02_Design/3D/Models",
@@ -551,6 +552,68 @@ def apply_plan(cwd, moves, do_moves=True):
     print(green(f"Done. Processed {done} files."))
 
 
+def cmd_rename():
+    """Rename files in place across all folders (template and non-template)."""
+    import shutil
+
+    cwd = Path.cwd()
+    project_prefix = parse_project_prefix(cwd)
+
+    if project_prefix:
+        print(f"{bold('Project prefix:')} {project_prefix}")
+        print()
+
+    # Collect ALL files in the project
+    renames = []  # (filepath, new_name)
+
+    for root, _dirs, filenames in os.walk(cwd):
+        for fname in filenames:
+            if fname in SKIP_FILES or fname.startswith("."):
+                continue
+            filepath = Path(root) / fname
+            new_name = clean_name(fname, project_prefix=project_prefix)
+            if new_name != fname:
+                renames.append((filepath, new_name))
+
+    if not renames:
+        print(dim("All filenames already follow conventions. Nothing to rename."))
+        return
+
+    # Show plan
+    print(bold(f"Renames ({len(renames)} files):"))
+    print()
+    for filepath, new_name in sorted(renames):
+        rel = filepath.relative_to(cwd)
+        parent = rel.parent
+        print(f"  {parent}/{dim(filepath.name)}")
+        print(f"    -> {parent}/{green(new_name)}")
+    print()
+
+    print(f"{bold('Apply renames?')} {dim('[y]es / [n]o')}")
+    try:
+        answer = input("> ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        return
+
+    if answer not in ("y", "yes"):
+        print("Aborted. No changes made.")
+        return
+
+    done = 0
+    for filepath, new_name in renames:
+        new_path = filepath.parent / new_name
+        if new_path.exists():
+            print(f"  {red('skip')} {filepath.name} -> {new_name} (destination exists)")
+            continue
+        shutil.move(str(filepath), str(new_path))
+        print(f"  {green('renamed')} {filepath.name} -> {new_name}")
+        done += 1
+
+    print()
+    print(green(f"Done. Renamed {done} files."))
+
+
 def cmd_clean():
     """Remove empty non-template directories."""
     cwd = Path.cwd()
@@ -591,6 +654,7 @@ def usage():
     print(f"  {bold('init')}          Create template folder structure here")
     print(f"  {bold('sort')}          Analyze loose files, show plan, confirm to move")
     print(f"  {bold('sort --deep')}   Also scan inside non-template subdirectories")
+    print(f"  {bold('rename')}        Rename all files in place (clean names, fix generics)")
     print(f"  {bold('clean')}         Remove empty non-template folders")
     print()
     print("Template location:")
@@ -609,6 +673,8 @@ def main():
     elif cmd == "sort":
         deep = "--deep" in sys.argv
         cmd_sort(deep=deep)
+    elif cmd == "rename":
+        cmd_rename()
     elif cmd == "clean":
         cmd_clean()
     elif cmd in ("-h", "--help", "help"):
