@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""
+project-organize: Scaffold and organize project folders based on a studio template.
+
+Usage:
+    project-organize init          Create template folder structure in current directory
+    project-organize sort          Analyze loose files, show plan, organize with confirmation
+    project-organize sort --deep   Also scan inside non-template subdirectories
+"""
+
+import os
+import re
+import sys
+from pathlib import Path
+
+TEMPLATE_DIR = Path(
+    "/Users/jonas/Library/CloudStorage/GoogleDrive-j@jonasjohansson.se"
+    "/Shared drives/PUBLIC/TEMPLATES/PROJECT_TEMPLATE"
+)
+
+# Top-level template folders (used to detect "already organized" files)
+TEMPLATE_ROOTS = {
+    "00_Admin", "01_Pre-Production", "02_Design", "03_Code",
+    "04_Production", "05_Installation", "06_Documentation",
+}
+
+# ── Name patterns (checked first, case-insensitive) ──────────────────────────
+NAME_RULES = [
+    (r"invoice|faktura",        "00_Admin/Invoices"),
+    (r"contract|avtal|kontrakt","00_Admin/Contracts"),
+    (r"budget|offert|quote",    "00_Admin/Budgets"),
+    (r"brief",                  "01_Pre-Production/Brief"),
+    (r"reference|ref_|moodboard","01_Pre-Production/References"),
+    (r"site.?visit|platsbeso",  "01_Pre-Production/Site_Visits"),
+    (r"workshop",               "01_Pre-Production/Workshop"),
+    (r"concept|sketch|skiss",   "02_Design/Concept"),
+    (r"presentation|slide|deck","02_Design/Presentations"),
+    (r"render",                 "02_Design/3D/Renders"),
+    (r"texture|material|hdri",  "02_Design/3D/Assets"),
+    (r"datasheet|datablad",     "04_Production/Datasheets"),
+    (r"fabricat|tillverkn",     "04_Production/Fabrication"),
+    (r"sign|skylt|plaqu",       "04_Production/Signage"),
+    (r"install",                "05_Installation"),
+    (r"process|wip|work.in.progress", "06_Documentation/Process"),
+]
+
+# ── Extension mapping (fallback when no name pattern matches) ─────────────────
+EXT_MAP = {
+    # 3D models
+    ".blend": "02_Design/3D/Models",
+    ".3dm":   "02_Design/3D/Models",
+    ".f3d":   "02_Design/3D/Models",
+    ".fbx":   "02_Design/3D/Models",
+    ".obj":   "02_Design/3D/Models",
+    ".c4d":   "02_Design/3D/Models",
+    ".max":   "02_Design/3D/Models",
+    ".ma":    "02_Design/3D/Models",
+    ".mb":    "02_Design/3D/Models",
+    ".usd":   "02_Design/3D/Models",
+    ".usdz":  "02_Design/3D/Models",
+    ".glb":   "02_Design/3D/Models",
+    ".gltf":  "02_Design/3D/Models",
+    # 3D exports / fabrication
+    ".stl":   "02_Design/3D/Exports",
+    ".dwg":   "02_Design/3D/Exports",
+    ".dxf":   "02_Design/3D/Exports",
+    ".step":  "02_Design/3D/Exports",
+    ".stp":   "02_Design/3D/Exports",
+    ".iges":  "02_Design/3D/Exports",
+    ".igs":   "02_Design/3D/Exports",
+    ".3mf":   "02_Design/3D/Exports",
+    # 3D assets
+    ".hdr":   "02_Design/3D/Assets",
+    ".exr":   "02_Design/3D/Assets",
+    ".mtl":   "02_Design/3D/Assets",
+    # 2D design
+    ".ai":    "02_Design/2D",
+    ".psd":   "02_Design/2D",
+    ".psb":   "02_Design/2D",
+    ".svg":   "02_Design/2D",
+    ".eps":   "02_Design/2D",
+    ".indd":  "02_Design/2D",
+    ".idml":  "02_Design/2D",
+    ".afdesign": "02_Design/2D",
+    ".afphoto":  "02_Design/2D",
+    ".sketch":   "02_Design/2D",
+    ".fig":      "02_Design/2D",
+    ".xd":       "02_Design/2D",
+    # Presentations
+    ".pptx":  "02_Design/Presentations",
+    ".ppt":   "02_Design/Presentations",
+    ".key":   "02_Design/Presentations",
+    ".keynote": "02_Design/Presentations",
+    # Code
+    ".toe":   "03_Code",
+    ".tox":   "03_Code",
+    ".py":    "03_Code",
+    ".js":    "03_Code",
+    ".ts":    "03_Code",
+    ".html":  "03_Code",
+    ".css":   "03_Code",
+    ".ino":   "03_Code",
+    ".pde":   "03_Code",
+    # Video
+    ".mp4":   "06_Documentation/Video",
+    ".mov":   "06_Documentation/Video",
+    ".avi":   "06_Documentation/Video",
+    ".mkv":   "06_Documentation/Video",
+    ".webm":  "06_Documentation/Video",
+    # Photo (default for images — name rules override for renders/refs/etc.)
+    ".jpg":   "06_Documentation/Photo",
+    ".jpeg":  "06_Documentation/Photo",
+    ".png":   "06_Documentation/Photo",
+    ".tif":   "06_Documentation/Photo",
+    ".tiff":  "06_Documentation/Photo",
+    ".heic":  "06_Documentation/Photo",
+    ".webp":  "06_Documentation/Photo",
+    ".raw":   "06_Documentation/Photo",
+    ".cr2":   "06_Documentation/Photo",
+    ".cr3":   "06_Documentation/Photo",
+    ".nef":   "06_Documentation/Photo",
+    ".arw":   "06_Documentation/Photo",
+    ".dng":   "06_Documentation/Photo",
+    # Spreadsheets → Admin (likely budgets/tracking)
+    ".xlsx":  "00_Admin/Budgets",
+    ".xls":   "00_Admin/Budgets",
+    ".csv":   "00_Admin/Budgets",
+    ".numbers": "00_Admin/Budgets",
+    # Documents
+    ".doc":   "00_Admin",
+    ".docx":  "00_Admin",
+    ".pages": "00_Admin",
+    ".rtf":   "00_Admin",
+    # PDF — too ambiguous to auto-sort, leave unsorted
+}
+
+SKIP_FILES = {".DS_Store", "Thumbs.db", ".gitkeep", "README.md", "readme.md"}
+
+
+def color(text, code):
+    if sys.stdout.isatty():
+        return f"\033[{code}m{text}\033[0m"
+    return text
+
+
+def green(t):  return color(t, "32")
+def yellow(t): return color(t, "33")
+def red(t):    return color(t, "31")
+def dim(t):    return color(t, "2")
+def bold(t):   return color(t, "1")
+
+
+def clean_name(name):
+    """Apply naming conventions: spaces → underscores."""
+    stem = Path(name).stem
+    ext = Path(name).suffix
+
+    new_stem = stem.replace(" ", "_")
+
+    # Collapse multiple underscores
+    new_stem = re.sub(r"_+", "_", new_stem)
+
+    return new_stem + ext
+
+
+def classify_file(filepath):
+    """Return (destination_subfolder, reason) or (None, reason) if unsorted."""
+    name = filepath.name.lower()
+
+    # Check name patterns first
+    for pattern, dest in NAME_RULES:
+        if re.search(pattern, name):
+            return dest, f"name matches '{pattern}'"
+
+    # Check extension
+    ext = filepath.suffix.lower()
+    if ext in EXT_MAP:
+        dest = EXT_MAP[ext]
+        if dest is not None:
+            return dest, f"extension '{ext}'"
+
+    return None, f"no rule for '{ext or 'no extension'}'"
+
+
+def get_template_dirs():
+    """Walk the template and return all directory paths (relative)."""
+    dirs = []
+    for root, subdirs, _files in os.walk(TEMPLATE_DIR):
+        for d in subdirs:
+            rel = os.path.relpath(os.path.join(root, d), TEMPLATE_DIR)
+            dirs.append(rel)
+    # Also include top-level folders
+    for item in sorted(TEMPLATE_DIR.iterdir()):
+        if item.is_dir():
+            rel = item.name
+            if rel not in dirs:
+                dirs.append(rel)
+    return sorted(set(dirs))
+
+
+def collect_loose_files(base, deep=False):
+    """Collect files not already inside template folders."""
+    base = Path(base)
+    files = []
+
+    for item in base.iterdir():
+        if item.name in SKIP_FILES or item.name.startswith("."):
+            continue
+
+        if item.is_file():
+            files.append(item)
+        elif item.is_dir() and item.name not in TEMPLATE_ROOTS:
+            if deep:
+                # Recursively collect from non-template directories
+                for root, _dirs, filenames in os.walk(item):
+                    for f in filenames:
+                        fp = Path(root) / f
+                        if fp.name not in SKIP_FILES and not fp.name.startswith("."):
+                            files.append(fp)
+            else:
+                # Just note the directory exists
+                pass
+
+    return files
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def cmd_init():
+    """Create the template folder structure in the current directory."""
+    cwd = Path.cwd()
+    dirs = get_template_dirs()
+
+    print(bold("Creating project structure in:"), cwd)
+    print()
+
+    created = 0
+    for d in dirs:
+        target = cwd / d
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            print(f"  {green('+')} {d}/")
+            created += 1
+        else:
+            print(f"  {dim('=')} {d}/  {dim('(exists)')}")
+
+    # Copy README
+    readme_src = TEMPLATE_DIR / "README.md"
+    readme_dst = cwd / "README.md"
+    if readme_src.exists() and not readme_dst.exists():
+        import shutil
+        shutil.copy2(readme_src, readme_dst)
+        print(f"  {green('+')} README.md")
+        created += 1
+
+    print()
+    if created:
+        print(green(f"Done. Created {created} items."))
+    else:
+        print(dim("Everything already exists. Nothing to do."))
+
+
+def cmd_sort(deep=False):
+    """Analyze files and propose moves/renames."""
+    cwd = Path.cwd()
+    files = collect_loose_files(cwd, deep=deep)
+
+    if not files:
+        print(dim("No loose files found to organize."))
+        if not deep:
+            print(dim("Tip: use --deep to also scan inside non-template subdirectories."))
+        return
+
+    # Build the plan
+    moves = []      # (source, dest, rename_reason)
+    unsorted = []   # (source, reason)
+
+    for f in sorted(files):
+        rel_source = f.relative_to(cwd)
+        new_name = clean_name(f.name)
+        renamed = new_name != f.name
+
+        dest_folder, reason = classify_file(f)
+
+        if dest_folder:
+            dest_path = Path(dest_folder) / new_name
+            rename_note = ""
+            if renamed:
+                rename_note = f"  {yellow('renamed')}: {f.name} -> {new_name}"
+            moves.append((rel_source, dest_path, reason, rename_note))
+        else:
+            unsorted.append((rel_source, reason, new_name if renamed else None))
+
+    # ── Display plan ──────────────────────────────────────────────────────
+
+    # Ensure template dirs exist before showing plan
+    missing_dirs = set()
+    for _, dest, _, _ in moves:
+        dest_dir = cwd / dest.parent
+        if not dest_dir.exists():
+            missing_dirs.add(str(dest.parent))
+
+    if missing_dirs:
+        print(bold("Folders to create:"))
+        for d in sorted(missing_dirs):
+            print(f"  {green('+')} {d}/")
+        print()
+
+    if moves:
+        print(bold(f"Moves ({len(moves)} files):"))
+        print()
+        for src, dst, reason, rename_note in moves:
+            print(f"  {src}")
+            print(f"    -> {green(str(dst))}  {dim(reason)}")
+            if rename_note:
+                print(f"    {rename_note}")
+        print()
+
+    if unsorted:
+        print(yellow(bold(f"Unsorted ({len(unsorted)} files — no matching rule):")))
+        print()
+        for src, reason, new_name in unsorted:
+            line = f"  {src}  {dim(reason)}"
+            if new_name:
+                line += f"  {yellow('would rename')}: {new_name}"
+            print(line)
+        print()
+
+    if not moves:
+        print(dim("Nothing to move. Only unsorted files remain."))
+        return
+
+    # ── Confirm ───────────────────────────────────────────────────────────
+
+    print(f"{bold('Apply this plan?')} {dim('[y]es / [n]o / [r]ename-only')}")
+    try:
+        answer = input("> ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        return
+
+    if answer in ("y", "yes"):
+        apply_plan(cwd, moves, do_moves=True)
+    elif answer in ("r", "rename", "rename-only"):
+        apply_plan(cwd, moves, do_moves=False)
+    else:
+        print("Aborted. No changes made.")
+
+
+def apply_plan(cwd, moves, do_moves=True):
+    """Execute the plan."""
+    import shutil
+
+    done = 0
+    for src, dst, _reason, _rename_note in moves:
+        src_path = cwd / src
+        dst_path = cwd / dst
+
+        if not src_path.exists():
+            print(f"  {red('skip')} {src} (not found)")
+            continue
+
+        if dst_path.exists():
+            print(f"  {red('skip')} {src} -> {dst} (destination exists)")
+            continue
+
+        if do_moves:
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src_path), str(dst_path))
+            print(f"  {green('moved')} {src} -> {dst}")
+        else:
+            # Rename only (stay in same directory)
+            new_name = clean_name(src_path.name)
+            if new_name != src_path.name:
+                renamed_path = src_path.parent / new_name
+                shutil.move(str(src_path), str(renamed_path))
+                print(f"  {green('renamed')} {src_path.name} -> {new_name}")
+        done += 1
+
+    print()
+    print(green(f"Done. Processed {done} files."))
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def usage():
+    print(bold("project-organize") + " — Scaffold and sort project folders\n")
+    print("Commands:")
+    print(f"  {bold('init')}          Create template folder structure here")
+    print(f"  {bold('sort')}          Analyze loose files, show plan, confirm to move")
+    print(f"  {bold('sort --deep')}   Also scan inside non-template subdirectories")
+    print()
+    print("Template location:")
+    print(f"  {dim(str(TEMPLATE_DIR))}")
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+
+    if cmd == "init":
+        cmd_init()
+    elif cmd == "sort":
+        deep = "--deep" in sys.argv
+        cmd_sort(deep=deep)
+    elif cmd in ("-h", "--help", "help"):
+        usage()
+    else:
+        print(red(f"Unknown command: {cmd}"))
+        usage()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
