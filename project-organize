@@ -26,22 +26,33 @@ TEMPLATE_ROOTS = {
 
 # ── Name patterns (checked first, case-insensitive) ──────────────────────────
 NAME_RULES = [
-    (r"invoice|faktura",        "00_Admin/Invoices"),
-    (r"contract|avtal|kontrakt","00_Admin/Contracts"),
-    (r"budget|offert|quote",    "00_Admin/Budgets"),
-    (r"brief",                  "01_Pre-Production/Brief"),
-    (r"reference|ref_|moodboard","01_Pre-Production/References"),
-    (r"site.?visit|platsbeso",  "01_Pre-Production/Site_Visits"),
-    (r"workshop",               "01_Pre-Production/Workshop"),
-    (r"concept|sketch|skiss",   "02_Design/Concept"),
-    (r"presentation|slide|deck","02_Design/Presentations"),
-    (r"render",                 "02_Design/3D/Renders"),
-    (r"texture|material|hdri",  "02_Design/3D/Assets"),
-    (r"datasheet|datablad",     "04_Production/Datasheets"),
-    (r"fabricat|tillverkn",     "04_Production/Fabrication"),
-    (r"sign|skylt|plaqu",       "04_Production/Signage"),
-    (r"install",                "05_Installation"),
-    (r"process|wip|work.in.progress", "06_Documentation/Process"),
+    # Admin
+    (r"invoice|faktura",                "00_Admin/Invoices"),
+    (r"contract|avtal|kontrakt",        "00_Admin/Contracts"),
+    (r"budget|offert|quote|kalkyl",     "00_Admin/Budgets"),
+    # Pre-production
+    (r"brief",                          "01_Pre-Production/Brief"),
+    (r"reference|ref_|moodboard",       "01_Pre-Production/References"),
+    (r"site.?visit|platsbeso",          "01_Pre-Production/Site_Visits"),
+    (r"workshop",                       "01_Pre-Production/Workshop"),
+    # Architectural / technical drawings → Pre-Production/Brief
+    (r"fasad|facade|elevation",         "01_Pre-Production/Brief"),
+    (r"plan.?ritning|floor.?plan|plan.?vy", "01_Pre-Production/Brief"),
+    (r"sektion|section|snitt",          "01_Pre-Production/Brief"),
+    (r"ritning|drawing|situationsplan", "01_Pre-Production/Brief"),
+    # Design
+    (r"concept|sketch|skiss",           "02_Design/Concept"),
+    (r"presentation|slide|deck",        "02_Design/Presentations"),
+    (r"render",                         "02_Design/3D/Renders"),
+    (r"texture|material|hdri",          "02_Design/3D/Assets"),
+    # Production
+    (r"datasheet|datablad",             "04_Production/Datasheets"),
+    (r"fabricat|tillverkn",             "04_Production/Fabrication"),
+    (r"sign|skylt|plaqu",              "04_Production/Signage"),
+    # Installation
+    (r"install",                        "05_Installation"),
+    # Documentation
+    (r"process|wip|work.in.progress",   "06_Documentation/Process"),
 ]
 
 # ── Extension mapping (fallback when no name pattern matches) ─────────────────
@@ -131,7 +142,45 @@ EXT_MAP = {
     ".docx":  "00_Admin",
     ".pages": "00_Admin",
     ".rtf":   "00_Admin",
-    # PDF — too ambiguous to auto-sort, leave unsorted
+    # Google Workspace
+    ".gdoc":    "00_Admin",
+    ".gsheet":  "00_Admin/Budgets",
+    ".gslides": "02_Design/Presentations",
+    ".gdraw":   "02_Design/2D",
+    # PDF → Admin by default (name rules catch briefs, datasheets, etc.)
+    ".pdf":     "00_Admin",
+    # Audio
+    ".wav":   "03_Code",
+    ".mp3":   "03_Code",
+    ".aiff":  "03_Code",
+    ".aif":   "03_Code",
+    ".flac":  "03_Code",
+    ".ogg":   "03_Code",
+    ".m4a":   "03_Code",
+    ".aac":   "03_Code",
+    # AV control / show files
+    ".avc":   "03_Code",
+    ".mad":   "03_Code",
+    ".xml":   "03_Code",
+    ".json":  "03_Code",
+    ".yaml":  "03_Code",
+    ".yml":   "03_Code",
+    ".toml":  "03_Code",
+    # Shell scripts
+    ".sh":    "03_Code",
+    ".bat":   "03_Code",
+    ".command": "03_Code",
+    # Archives
+    ".zip":   "00_Admin",
+    ".rar":   "00_Admin",
+    ".7z":    "00_Admin",
+    ".gz":    "00_Admin",
+    ".tar":   "00_Admin",
+    # Fonts
+    ".otf":   "02_Design/2D",
+    ".ttf":   "02_Design/2D",
+    ".woff":  "02_Design/2D",
+    ".woff2": "02_Design/2D",
 }
 
 SKIP_FILES = {".DS_Store", "Thumbs.db", ".gitkeep", "README.md", "readme.md"}
@@ -151,35 +200,44 @@ def bold(t):   return color(t, "1")
 
 
 def clean_name(name):
-    """Apply naming conventions: spaces → underscores."""
+    """Apply naming conventions to filenames."""
     stem = Path(name).stem
-    ext = Path(name).suffix
+    ext = Path(name).suffix.lower()  # normalize extension to lowercase
 
+    # Spaces → underscores
     new_stem = stem.replace(" ", "_")
+
+    # Commas, semicolons → underscores
+    new_stem = re.sub(r"[,;]+", "_", new_stem)
+
+    # Remove other problematic characters (keep letters, digits, underscore, hyphen, dot)
+    new_stem = re.sub(r"[^\w\-.]", "_", new_stem)
 
     # Collapse multiple underscores
     new_stem = re.sub(r"_+", "_", new_stem)
+
+    # Strip leading/trailing underscores
+    new_stem = new_stem.strip("_")
 
     return new_stem + ext
 
 
 def classify_file(filepath):
-    """Return (destination_subfolder, reason) or (None, reason) if unsorted."""
+    """Return (destination_subfolder, reason). Always returns a destination."""
     name = filepath.name.lower()
 
-    # Check name patterns first
+    # Check name patterns first (most specific)
     for pattern, dest in NAME_RULES:
         if re.search(pattern, name):
             return dest, f"name matches '{pattern}'"
 
-    # Check extension
+    # Check extension mapping
     ext = filepath.suffix.lower()
     if ext in EXT_MAP:
-        dest = EXT_MAP[ext]
-        if dest is not None:
-            return dest, f"extension '{ext}'"
+        return EXT_MAP[ext], f"extension '{ext}'"
 
-    return None, f"no rule for '{ext or 'no extension'}'"
+    # Fallback: put unknown files in 00_Admin so nothing is left loose
+    return "00_Admin", f"fallback (unknown '{ext or 'no extension'}')"
 
 
 def get_template_dirs():
@@ -272,8 +330,7 @@ def cmd_sort(deep=False):
         return
 
     # Build the plan
-    moves = []      # (source, dest, rename_reason)
-    unsorted = []   # (source, reason)
+    moves = []      # (source, dest, reason, rename_note)
 
     for f in sorted(files):
         rel_source = f.relative_to(cwd)
@@ -281,19 +338,15 @@ def cmd_sort(deep=False):
         renamed = new_name != f.name
 
         dest_folder, reason = classify_file(f)
-
-        if dest_folder:
-            dest_path = Path(dest_folder) / new_name
-            rename_note = ""
-            if renamed:
-                rename_note = f"  {yellow('renamed')}: {f.name} -> {new_name}"
-            moves.append((rel_source, dest_path, reason, rename_note))
-        else:
-            unsorted.append((rel_source, reason, new_name if renamed else None))
+        dest_path = Path(dest_folder) / new_name
+        rename_note = ""
+        if renamed:
+            rename_note = f"  {yellow('renamed')}: {f.name} -> {new_name}"
+        moves.append((rel_source, dest_path, reason, rename_note))
 
     # ── Display plan ──────────────────────────────────────────────────────
 
-    # Ensure template dirs exist before showing plan
+    # Check which folders need creating
     missing_dirs = set()
     for _, dest, _, _ in moves:
         dest_dir = cwd / dest.parent
@@ -306,29 +359,14 @@ def cmd_sort(deep=False):
             print(f"  {green('+')} {d}/")
         print()
 
-    if moves:
-        print(bold(f"Moves ({len(moves)} files):"))
-        print()
-        for src, dst, reason, rename_note in moves:
-            print(f"  {src}")
-            print(f"    -> {green(str(dst))}  {dim(reason)}")
-            if rename_note:
-                print(f"    {rename_note}")
-        print()
-
-    if unsorted:
-        print(yellow(bold(f"Unsorted ({len(unsorted)} files — no matching rule):")))
-        print()
-        for src, reason, new_name in unsorted:
-            line = f"  {src}  {dim(reason)}"
-            if new_name:
-                line += f"  {yellow('would rename')}: {new_name}"
-            print(line)
-        print()
-
-    if not moves:
-        print(dim("Nothing to move. Only unsorted files remain."))
-        return
+    print(bold(f"Plan ({len(moves)} files):"))
+    print()
+    for src, dst, reason, rename_note in moves:
+        print(f"  {src}")
+        print(f"    -> {green(str(dst))}  {dim(reason)}")
+        if rename_note:
+            print(f"    {rename_note}")
+    print()
 
     # ── Confirm ───────────────────────────────────────────────────────────
 
