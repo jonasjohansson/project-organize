@@ -185,6 +185,32 @@ EXT_MAP = {
 
 SKIP_FILES = {".DS_Store", "Thumbs.db", ".gitkeep", "README.md", "readme.md"}
 
+# Patterns that indicate a generic/meaningless filename
+GENERIC_PATTERNS = [
+    r"^untitled",
+    r"^unnamed",
+    r"^new_?document",
+    r"^nytt_?dokument",
+    r"^document\d*$",
+    r"^dokument\d*$",
+    r"^IMG_\d+",
+    r"^DSC_?\d+",
+    r"^DJI_?\d+",
+    r"^DCIM",
+    r"^DSCF?\d+",
+    r"^P\d{7}",          # Panasonic: P1000123
+    r"^MVI_?\d+",
+    r"^MOV_?\d+",
+    r"^VID_?\d+",
+    r"^Screen_?Shot",
+    r"^Sk.rmavbild",     # macOS Swedish: Skärmavbild
+    r"^Screen_?Recording",
+    r"^Inspelning",
+    r"^Copy_of_",
+    r"^kopia_av_",
+    r"^Namnl.s",         # Swedish: Namnlös (nameless)
+]
+
 
 def color(text, code):
     if sys.stdout.isatty():
@@ -199,7 +225,45 @@ def dim(t):    return color(t, "2")
 def bold(t):   return color(t, "1")
 
 
-def clean_name(name):
+def parse_project_prefix(cwd):
+    """Extract a project prefix from the folder name.
+
+    Expects formats like '186 SANKT PETRI' or 'NNN PROJECT NAME YEAR'.
+    Returns e.g. '186_Sankt_Petri'.
+    """
+    folder_name = cwd.name
+
+    parts = folder_name.split()
+    if not parts:
+        return None
+
+    # Check if first part is a project number
+    number = None
+    name_parts = parts
+    if re.match(r"^\d+$", parts[0]):
+        number = parts[0]
+        name_parts = parts[1:]
+
+    if not name_parts:
+        return number
+
+    # Title case the name parts, join with underscore
+    name = "_".join(p.capitalize() for p in name_parts)
+
+    if number:
+        return f"{number}_{name}"
+    return name
+
+
+def is_generic_name(stem):
+    """Check if a filename stem is generic/meaningless."""
+    for pattern in GENERIC_PATTERNS:
+        if re.search(pattern, stem, re.IGNORECASE):
+            return True
+    return False
+
+
+def clean_name(name, project_prefix=None):
     """Apply naming conventions to filenames."""
     stem = Path(name).stem
     ext = Path(name).suffix.lower()  # normalize extension to lowercase
@@ -218,6 +282,21 @@ def clean_name(name):
 
     # Strip leading/trailing underscores
     new_stem = new_stem.strip("_")
+
+    # Replace generic names with project prefix
+    if project_prefix and is_generic_name(new_stem):
+        # Preserve embedded date (e.g. Screen_Shot_2024-01-15 → keep date)
+        date_match = re.search(r"(\d{4}[-_]\d{2}[-_]\d{2})", new_stem)
+        if date_match:
+            date_str = date_match.group(1).replace("_", "-")
+            new_stem = f"{project_prefix}_{date_str}"
+        else:
+            # Preserve any trailing number (e.g. IMG_4532 → keep 4532 as sequence)
+            trailing = re.search(r"(\d+)$", new_stem)
+            if trailing:
+                new_stem = f"{project_prefix}_{trailing.group(1)}"
+            else:
+                new_stem = project_prefix
 
     return new_stem + ext
 
@@ -329,16 +408,37 @@ def cmd_sort(deep=False):
             print(dim("Tip: use --deep to also scan inside non-template subdirectories."))
         return
 
+    # Parse project prefix from folder name
+    project_prefix = parse_project_prefix(cwd)
+    if project_prefix:
+        print(f"{bold('Project prefix:')} {project_prefix}")
+        print()
+
     # Build the plan
     moves = []      # (source, dest, reason, rename_note)
 
+    # Track destination names to handle duplicates with sequence numbers
+    dest_counts = {}
+
     for f in sorted(files):
         rel_source = f.relative_to(cwd)
-        new_name = clean_name(f.name)
-        renamed = new_name != f.name
+        new_name = clean_name(f.name, project_prefix=project_prefix)
 
         dest_folder, reason = classify_file(f)
         dest_path = Path(dest_folder) / new_name
+
+        # Handle duplicate destinations by adding sequence numbers
+        dest_key = str(dest_path)
+        if dest_key in dest_counts:
+            dest_counts[dest_key] += 1
+            stem = Path(new_name).stem
+            ext = Path(new_name).suffix
+            new_name = f"{stem}_{dest_counts[dest_key]:03d}{ext}"
+            dest_path = Path(dest_folder) / new_name
+        else:
+            dest_counts[dest_key] = 0
+
+        renamed = new_name != f.name
         rename_note = ""
         if renamed:
             rename_note = f"  {yellow('renamed')}: {f.name} -> {new_name}"
