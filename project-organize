@@ -415,6 +415,36 @@ def apply_plan(cwd, moves, do_moves=True):
                 print(f"  {green('renamed')} {src_path.name} -> {new_name}")
         done += 1
 
+    # Clean up empty directories left behind
+    if do_moves:
+        removed_dirs = []
+        # Walk bottom-up so children are removed before parents
+        for root, dirs, files in os.walk(cwd, topdown=False):
+            dirpath = Path(root)
+            # Skip the project root itself
+            if dirpath == cwd:
+                continue
+            # Skip template folders — those should stay even if empty
+            rel = dirpath.relative_to(cwd)
+            top_folder = rel.parts[0] if rel.parts else ""
+            if top_folder in TEMPLATE_ROOTS:
+                continue
+            # Remove if empty (only .DS_Store or truly empty)
+            remaining = [f for f in dirpath.iterdir() if f.name != ".DS_Store"]
+            if not remaining:
+                # Remove .DS_Store if it's the only thing left
+                ds = dirpath / ".DS_Store"
+                if ds.exists():
+                    ds.unlink()
+                dirpath.rmdir()
+                removed_dirs.append(str(rel))
+
+        if removed_dirs:
+            print()
+            print(bold(f"Cleaned up {len(removed_dirs)} empty folders:"))
+            for d in sorted(removed_dirs):
+                print(f"  {dim('-')} {d}/")
+
     print()
     print(green(f"Done. Processed {done} files."))
 
